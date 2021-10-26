@@ -690,6 +690,10 @@ class BaseImage(BuildPack):
                 )
             )
 
+            third_party_builds = self.binder_path("thirdPartyBuild")
+            if os.path.exists(third_party_builds):
+                scripts.append(third_party_builds)
+
         except FileNotFoundError:
             pass
 
