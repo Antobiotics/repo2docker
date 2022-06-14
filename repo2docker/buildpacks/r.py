@@ -80,6 +80,7 @@ class RBuildPack(PythonBuildPack):
             "4.0": "4.0.5-1.1804.0",
             "4.0.2": "4.0.2-1.1804.0",
             "4.1": "4.1.2-1.1804.0",
+            "4.2.0": "4.2.0-1.1804.0"
         }
         # the default if nothing is specified
         r_version = "4.1"
