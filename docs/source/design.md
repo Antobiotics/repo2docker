@@ -7,8 +7,7 @@ The philosophy for the repo2docker buildpacks includes:
 - using common configuration files for familiar installation and packaging tools
 - allowing configuration files to be combined to compose more complex setups
 - specifying default locations for configuration files
-(in the repository's root, `binder` or `.binder` directory)
-
+  (in the repository's root, `binder` or `.binder` directory)
 
 When designing `repo2docker` and adding to it in the future, the
 developers are influenced by two primary use cases.
@@ -50,7 +49,7 @@ Many ingredients go into making an image from a repository:
 
 `repo2docker` controls the first two, the user controls the third one. The current
 policy for the version of the base image is that we will use the current LTS
-version Bionic Beaver (18.04) for the foreseeable future.
+version Jammy Jellyfish (22.04) for the foreseeable future.
 
 The version of `repo2docker` used to build an image can influence which packages
 are installed by default and which features are supported during the build
@@ -79,7 +78,7 @@ is a highly recommended quick read.
 Although other projects, like
 [s2i](https://github.com/openshift/source-to-image), exist to convert source to
 Docker images, `repo2docker` provides the additional functionality to support
-*composable* environments. We want to easily have an image with
+_composable_ environments. We want to easily have an image with
 Python3+Julia+R-3.2 environments, rather than just one single language
 environment. While generally one language environment per container works well,
 in many scientific / datascience computing environments you need multiple

@@ -1,17 +1,17 @@
 import json
+import logging
 import os
 import re
-import urllib
-import pytest
 import tempfile
-import logging
-
-from unittest.mock import patch, MagicMock, mock_open
+import urllib
+from unittest.mock import MagicMock, mock_open, patch
 from zipfile import ZipFile
 
-from repo2docker.contentproviders.doi import DoiProvider
-from repo2docker.contentproviders.base import ContentProviderException
+import pytest
+
 from repo2docker import __version__
+from repo2docker.contentproviders.base import ContentProviderException
+from repo2docker.contentproviders.doi import DoiProvider
 
 
 def test_content_id():
@@ -27,11 +27,17 @@ def test_url_headers(requests_mock):
     result = doi.urlopen("https://mybinder.org", headers=headers)
     assert "test1" in result.request.headers
     assert "Test2" in result.request.headers
-    assert result.request.headers["User-Agent"] == "repo2docker {}".format(__version__)
+    assert result.request.headers["User-Agent"] == f"repo2docker {__version__}"
 
 
-def test_unresolving_doi():
+@pytest.mark.parametrize(
+    "requested_doi, expected",
+    [
+        ("10.5281/zenodo.3242074", "https://zenodo.org/records/3242074"),
+        # Unresolving DOI:
+        ("10.1/1234", "10.1/1234"),
+    ],
+)
+def test_doi2url(requested_doi, expected):
     doi = DoiProvider()
-
-    fakedoi = "10.1/1234"
-    assert doi.doi2url(fakedoi) is fakedoi
+    assert doi.doi2url(requested_doi) == expected

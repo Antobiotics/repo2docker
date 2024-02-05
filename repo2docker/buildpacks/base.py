@@ -1,18 +1,21 @@
-import textwrap
-import jinja2
-import tarfile
+import hashlib
 import io
+import logging
 import os
 import re
-import logging
 import string
 import sys
-import hashlib
+import tarfile
+import textwrap
+from functools import lru_cache
+
 import escapism
+import jinja2
+from docker.utils.build import exclude_paths
 
 # Only use syntax features supported by Docker 17.09
 TEMPLATE = r"""
-FROM buildpack-deps:bionic
+FROM {{base_image}}
 
 # Avoid prompts from apt
 ENV DEBIAN_FRONTEND=noninteractive
@@ -27,18 +30,18 @@ RUN apt-get -qq update && \
 RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && \
     locale-gen
 
-ENV LC_ALL en_US.UTF-8
-ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8 \
+    LANG=en_US.UTF-8 \
+    LANGUAGE=en_US.UTF-8
 
 # Use bash as default shell, rather than sh
-ENV SHELL /bin/bash
+ENV SHELL=/bin/bash
 
 # Set up user
 ARG NB_USER
 ARG NB_UID
-ENV USER ${NB_USER}
-ENV HOME /home/${NB_USER}
+ENV USER=${NB_USER} \
+    HOME=/home/${NB_USER}
 
 RUN groupadd \
         --gid ${NB_UID} \
@@ -81,13 +84,13 @@ EXPOSE 8888
 {% if build_env -%}
 # Environment variables required for build
 {% for item in build_env -%}
-ENV {{item[0]}} {{item[1]}}
+ENV {{item[0]}}={{item[1]}}
 {% endfor -%}
 {% endif -%}
 
 {% if path -%}
 # Special case PATH
-ENV PATH {{ ':'.join(path) }}:${PATH}
+ENV PATH={{ ':'.join(path) }}:${PATH}
 {% endif -%}
 
 {% if build_script_files -%}
@@ -105,7 +108,12 @@ USER root
 
 # Allow target path repo is cloned to be configurable
 ARG REPO_DIR=${HOME}
-ENV REPO_DIR ${REPO_DIR}
+ENV REPO_DIR=${REPO_DIR}
+# Create a folder and grant the user permissions if it doesn't exist
+RUN if [ ! -d "${REPO_DIR}" ]; then \
+        /usr/bin/install -o ${NB_USER} -g ${NB_USER} -d "${REPO_DIR}"; \
+    fi
+
 WORKDIR ${REPO_DIR}
 RUN chown ${NB_USER}:${NB_USER} ${REPO_DIR}
 
@@ -117,12 +125,12 @@ RUN chown ${NB_USER}:${NB_USER} ${REPO_DIR}
 #
 # The XDG standard suggests ~/.local/bin as the path for local user-specific
 # installs. See https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
-ENV PATH ${HOME}/.local/bin:${REPO_DIR}/.local/bin:${PATH}
+ENV PATH=${HOME}/.local/bin:${REPO_DIR}/.local/bin:${PATH}
 
 {% if env -%}
 # The rest of the environment
 {% for item in env -%}
-ENV {{item[0]}} {{item[1]}}
+ENV {{item[0]}}={{item[1]}}
 {% endfor -%}
 {% endif -%}
 
@@ -144,7 +152,7 @@ COPY --chown={{ user }}:{{ user }} src/{{ src }} ${REPO_DIR}/{{ dst }}
 USER root
 
 # Copy stuff.
-COPY --chown={{ user }}:{{ user }} src/ ${REPO_DIR}
+COPY --chown={{ user }}:{{ user }} src/ ${REPO_DIR}/
 
 # Run assemble scripts! These will actually turn the specification
 # in the repository into an image.
@@ -181,7 +189,7 @@ RUN ./{{ s }}
 # Add start script
 {% if start_script is not none -%}
 RUN chmod +x "{{ start_script }}"
-ENV R2D_ENTRYPOINT "{{ start_script }}"
+ENV R2D_ENTRYPOINT="{{ start_script }}"
 {% endif -%}
 
 # Add entrypoint
@@ -212,7 +220,6 @@ class BuildPack:
     Specifically used for creating Dockerfiles for use with repo2docker only.
 
     Things that are kept constant:
-     - base image
      - some environment variables (such as locale)
      - user creation & ownership of home directory
      - working directory
@@ -222,16 +229,22 @@ class BuildPack:
 
     """
 
-    def __init__(self):
+    def __init__(self, base_image):
+        """
+        base_image specifies the base image to use when building docker images
+        """
         self.log = logging.getLogger("repo2docker")
         self.appendix = ""
+        self.base_image = base_image
         self.labels = {}
         if sys.platform.startswith("win"):
             self.log.warning(
                 "Windows environment detected. Note that Windows "
                 "support is experimental in repo2docker."
             )
+        self.platform = ""
 
+    @lru_cache()
     def get_packages(self):
         """
         List of packages that are installed in this BuildPack.
@@ -241,6 +254,7 @@ class BuildPack:
         """
         return set()
 
+    @lru_cache()
     def get_base_packages(self):
         """
         Base set of apt packages that are installed for all images.
@@ -255,8 +269,11 @@ class BuildPack:
             # Utils!
             "less",
             "unzip",
+            # Gives us envsubst
+            "gettext-base",
         }
 
+    @lru_cache()
     def get_build_env(self):
         """
         Ordered list of environment variables to be set for this image.
@@ -272,6 +289,7 @@ class BuildPack:
         """
         return []
 
+    @lru_cache()
     def get_env(self):
         """
         Ordered list of environment variables to be set for this image.
@@ -286,6 +304,7 @@ class BuildPack:
         """
         return []
 
+    @lru_cache()
     def get_path(self):
         """
         Ordered list of file system paths to look for executables in.
@@ -295,12 +314,14 @@ class BuildPack:
         """
         return []
 
+    @lru_cache()
     def get_labels(self):
         """
         Docker labels to set on the built image.
         """
         return self.labels
 
+    @lru_cache()
     def get_build_script_files(self):
         """
         Dict of files to be copied to the container image for use in building.
@@ -325,6 +346,7 @@ class BuildPack:
                     f"Found a stencila manifest.xml at {root}. Stencila is no longer supported."
                 )
 
+    @lru_cache()
     def get_build_scripts(self):
         """
         Ordered list of shell script snippets to build the base image.
@@ -346,6 +368,7 @@ class BuildPack:
 
         return []
 
+    @lru_cache()
     def get_preassemble_script_files(self):
         """
         Dict of files to be copied to the container image for use in preassembly.
@@ -359,6 +382,7 @@ class BuildPack:
         """
         return {}
 
+    @lru_cache()
     def get_preassemble_scripts(self):
         """
         Ordered list of shell snippets to build an image for this repository.
@@ -375,6 +399,7 @@ class BuildPack:
         """
         return []
 
+    @lru_cache()
     def get_assemble_scripts(self):
         """
         Ordered list of shell script snippets to build the repo into the image.
@@ -401,6 +426,7 @@ class BuildPack:
         """
         return []
 
+    @lru_cache()
     def get_post_build_scripts(self):
         """
         An ordered list of executable scripts to execute after build.
@@ -413,9 +439,11 @@ class BuildPack:
         """
         return []
 
+    @lru_cache()
     def get_admin_build_scripts(self):
         return []
 
+    @lru_cache()
     def get_start_script(self):
         """
         The path to a script to be executed at container start up.
@@ -468,7 +496,7 @@ class BuildPack:
         last_user = "root"
         for user, script in self.get_build_scripts():
             if last_user != user:
-                build_script_directives.append("USER {}".format(user))
+                build_script_directives.append(f"USER {user}")
                 last_user = user
             build_script_directives.append(
                 "RUN {}".format(textwrap.dedent(script.strip("\n")))
@@ -478,7 +506,7 @@ class BuildPack:
         last_user = "root"
         for user, script in self.get_assemble_scripts():
             if last_user != user:
-                assemble_script_directives.append("USER {}".format(user))
+                assemble_script_directives.append(f"USER {user}")
                 last_user = user
             assemble_script_directives.append(
                 "RUN {}".format(textwrap.dedent(script.strip("\n")))
@@ -488,7 +516,7 @@ class BuildPack:
         last_user = "root"
         for user, script in self.get_preassemble_scripts():
             if last_user != user:
-                preassemble_script_directives.append("USER {}".format(user))
+                preassemble_script_directives.append(f"USER {user}")
                 last_user = user
             preassemble_script_directives.append(
                 "RUN {}".format(textwrap.dedent(script.strip("\n")))
@@ -526,6 +554,7 @@ class BuildPack:
             appendix=self.appendix,
             # For docker 17.09 `COPY --chown`, 19.03 would allow using $NBUSER
             user=build_args.get("NB_UID", DEFAULT_NB_UID),
+            base_image=self.base_image,
         )
 
     @staticmethod
@@ -565,6 +594,7 @@ class BuildPack:
         build_args,
         cache_from,
         extra_build_kwargs,
+        platform=None,
     ):
         tarf = io.BytesIO()
         tar = tarfile.open(fileobj=tarf, mode="w")
@@ -574,16 +604,16 @@ class BuildPack:
 
         tar.addfile(dockerfile_tarinfo, io.BytesIO(dockerfile))
 
-        def _filter_tar(tar):
+        def _filter_tar(tarinfo):
             # We need to unset these for build_script_files we copy into tar
             # Otherwise they seem to vary each time, preventing effective use
             # of the cache!
             # https://github.com/docker/docker-py/pull/1582 is related
-            tar.uname = ""
-            tar.gname = ""
-            tar.uid = int(build_args.get("NB_UID", DEFAULT_NB_UID))
-            tar.gid = int(build_args.get("NB_UID", DEFAULT_NB_UID))
-            return tar
+            tarinfo.uname = ""
+            tarinfo.gname = ""
+            tarinfo.uid = int(build_args.get("NB_UID", DEFAULT_NB_UID))
+            tarinfo.gid = int(build_args.get("NB_UID", DEFAULT_NB_UID))
+            return tarinfo
 
         for src in sorted(self.get_build_script_files()):
             dest_path, src_path = self.generate_build_context_filename(src)
@@ -592,7 +622,34 @@ class BuildPack:
         for fname in ("repo2docker-entrypoint", "python3-login"):
             tar.add(os.path.join(HERE, fname), fname, filter=_filter_tar)
 
-        tar.add(".", "src/", filter=_filter_tar)
+        exclude = []
+
+        for ignore_file_name in [".dockerignore", ".containerignore"]:
+            ignore_file_name = self.binder_path(ignore_file_name)
+            if os.path.exists(ignore_file_name):
+                with open(ignore_file_name) as ignore_file:
+                    cleaned_lines = [
+                        line.strip() for line in ignore_file.read().splitlines()
+                    ]
+                    exclude.extend(
+                        [
+                            line
+                            for line in cleaned_lines
+                            if line != "" and line[0] != "#"
+                        ]
+                    )
+
+        files_to_add = exclude_paths(".", exclude)
+
+        if files_to_add:
+            for item in files_to_add:
+                tar.add(item, f"src/{item}", filter=_filter_tar)
+        else:
+            # Either the source was empty or everything was filtered out.
+            # In any case, create an src dir so the build can proceed.
+            src = tarfile.TarInfo("src")
+            src.type = tarfile.DIRTYPE
+            tar.addfile(src)
 
         tar.close()
         tarf.seek(0)
@@ -601,8 +658,8 @@ class BuildPack:
         # buildpacks/docker.py where it is duplicated
         if not isinstance(memory_limit, int):
             raise ValueError(
-                "The memory limit has to be specified as an"
-                "integer but is '{}'".format(type(memory_limit))
+                "The memory limit has to be specified as an "
+                f"integer but is '{type(memory_limit)}'"
             )
         limits = {}
         if memory_limit:
@@ -619,21 +676,23 @@ class BuildPack:
             buildargs=build_args,
             container_limits=limits,
             cache_from=cache_from,
+            platform=platform,
         )
 
         build_kwargs.update(extra_build_kwargs)
 
-        for line in client.build(**build_kwargs):
-            yield line
+        yield from client.build(**build_kwargs)
 
 
 class BaseImage(BuildPack):
+    @lru_cache()
     def get_build_env(self):
         """Return env directives required for build"""
         return [
             ("APP_BASE", "/srv"),
         ]
 
+    @lru_cache()
     def get_env(self):
         """Return env directives to be set after build"""
         return []
@@ -641,6 +700,7 @@ class BaseImage(BuildPack):
     def detect(self):
         return True
 
+    @lru_cache()
     def get_preassemble_scripts(self):
         scripts = []
         try:
@@ -655,8 +715,7 @@ class BaseImage(BuildPack):
                     # FIXME: Add support for specifying version numbers
                     if not re.match(r"^[a-z0-9.+-]+", package):
                         raise ValueError(
-                            "Found invalid package name {} in "
-                            "apt.txt".format(package)
+                            f"Found invalid package name {package} in apt.txt"
                         )
                     extra_apt_packages.append(package)
 
@@ -670,9 +729,7 @@ class BaseImage(BuildPack):
                 apt-get -qq purge && \
                 apt-get -qq clean && \
                 rm -rf /var/lib/apt/lists/*
-                """.format(
-                        " ".join(sorted(extra_apt_packages))
-                    ),
+                """.format(" ".join(sorted(extra_apt_packages))),
                 )
             )
         except FileNotFoundError:
@@ -680,22 +737,26 @@ class BaseImage(BuildPack):
 
         return scripts
 
+    @lru_cache()
     def get_assemble_scripts(self):
         """Return directives to run after the entire repository has been added to the image"""
         return []
 
+    @lru_cache()
     def get_post_build_scripts(self):
         post_build = self.binder_path("postBuild")
         if os.path.exists(post_build):
             return [post_build]
         return []
 
+    @lru_cache()
     def get_admin_build_scripts(self):
         admin_build = self.binder_path("thirdPartyBuild")
         if os.path.exists(admin_build):
             return [admin_build]
         return []
 
+    @lru_cache()
     def get_start_script(self):
         start = self.binder_path("start")
         if os.path.exists(start):
