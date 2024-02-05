@@ -160,6 +160,14 @@ COPY --chown={{ user }}:{{ user }} src/ ${REPO_DIR}/
 {{ sd }}
 {% endfor %}
 
+{% if admin_build_scripts -%}
+# Make sure that thirdPartyBuild scripts are marked executable before executing them
+{% for s in admin_build_scripts %}
+RUN chmod +x {{ s }}
+RUN ./{{ s }}
+{% endfor %}
+{% endif -%}
+
 # Container image Labels!
 # Put these at the end, since we don't want to rebuild everything
 # when these change! Did I mention I hate Dockerfile cache semantics?
@@ -432,6 +440,10 @@ class BuildPack:
         return []
 
     @lru_cache()
+    def get_admin_build_scripts(self):
+        return []
+
+    @lru_cache()
     def get_start_script(self):
         """
         The path to a script to be executed at container start up.
@@ -537,6 +549,7 @@ class BuildPack:
             build_script_files=build_script_files,
             base_packages=sorted(self.get_base_packages()),
             post_build_scripts=self.get_post_build_scripts(),
+            admin_build_scripts=self.get_admin_build_scripts(),
             start_script=self.get_start_script(),
             appendix=self.appendix,
             # For docker 17.09 `COPY --chown`, 19.03 would allow using $NBUSER
@@ -716,12 +729,9 @@ class BaseImage(BuildPack):
                 apt-get -qq purge && \
                 apt-get -qq clean && \
                 rm -rf /var/lib/apt/lists/*
-                """.format(
-                        " ".join(sorted(extra_apt_packages))
-                    ),
+                """.format(" ".join(sorted(extra_apt_packages))),
                 )
             )
-
         except FileNotFoundError:
             pass
 
@@ -737,6 +747,13 @@ class BaseImage(BuildPack):
         post_build = self.binder_path("postBuild")
         if os.path.exists(post_build):
             return [post_build]
+        return []
+
+    @lru_cache()
+    def get_admin_build_scripts(self):
+        admin_build = self.binder_path("thirdPartyBuild")
+        if os.path.exists(admin_build):
+            return [admin_build]
         return []
 
     @lru_cache()
